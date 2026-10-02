@@ -210,7 +210,7 @@ local VersionTag = Instance.new("TextLabel")
 VersionTag.Size = UDim2.new(0, 72, 0, 20)
 VersionTag.Position = UDim2.new(0, 5, 0.5, -10)
 VersionTag.BackgroundColor3 = Colors.Accent
-VersionTag.Text = "0.1beta"
+VersionTag.Text = "0.1beta2"
 VersionTag.TextColor3 = Color3.fromRGB(20, 15, 25)
 VersionTag.Font = FontPrimary
 VersionTag.TextSize = 11
@@ -1054,80 +1054,95 @@ end
 
 local skillcheckOrigCB = nil
 local arcadeOrigCB = nil
+local originalCallbacks = {}
 
 local function ApplyInstantSkillcheck(state)
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
     local events = ReplicatedStorage:FindFirstChild("Events") or ReplicatedStorage
 
-    -- 1. Generator Skillchecks
-    local scEvent = events:FindFirstChild("SkillcheckUpdate")
-    if scEvent and scEvent:IsA("RemoteFunction") then
-        if state then
-            if getcallbackvalue and not skillcheckOrigCB then
-                pcall(function() skillcheckOrigCB = getcallbackvalue(scEvent, "OnClientInvoke") end)
-            end
-            scEvent.OnClientInvoke = function(...)
-                task.spawn(function()
-                    pcall(function()
-                        local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-                        if not playerGui then return end
-                        for _, gui in ipairs(playerGui:GetChildren()) do
-                            if gui:IsA("ScreenGui") then
-                                local menu = gui:FindFirstChild("Menu") or gui
-                                local scFrame = menu:FindFirstChild("SkillCheckFrame", true)
-                                if scFrame then scFrame.Visible = false end
-                                local cal = menu:FindFirstChild("Calibrate", true)
-                                if cal then cal.Visible = false end
-                                local msg = menu:FindFirstChild("SkillCheckMessage", true)
-                                if msg then
-                                    msg.Text = "Great Job!"
-                                    msg.Visible = true
-                                    msg.TextTransparency = 0
-                                end
-                            end
-                        end
+    local function hideMinigameGuis()
+        pcall(function()
+            local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+            if not playerGui then return end
+            local screenGui = playerGui:FindFirstChild("ScreenGui") or playerGui:FindFirstChildWhichIsA("ScreenGui")
+            if not screenGui then return end
+            
+            local menu = screenGui:FindFirstChild("Menu") or screenGui
+            if menu then
+                local scf = menu:FindFirstChild("SkillCheckFrame", true)
+                if scf then scf.Visible = false end
+
+                local cal = menu:FindFirstChild("Calibrate", true) or menu:FindFirstChild("CalibrationFrame", true) or menu:FindFirstChild("ArcadeFrame", true)
+                if cal then cal.Visible = false end
+
+                local correct = screenGui:FindFirstChild("Correct", true)
+                if correct and correct:IsA("Sound") then pcall(function() correct:Play() end) end
+
+                local goldHit = screenGui:FindFirstChild("GoldAreaHit", true)
+                if goldHit and goldHit:IsA("Sound") then pcall(function() goldHit:Play() end) end
+
+                local msg = menu:FindFirstChild("SkillCheckMessage", true)
+                if msg then
+                    msg.Text = "Great Job!"
+                    msg.Visible = true
+                    msg.TextTransparency = 0
+                    local uiGrad = msg:FindFirstChildWhichIsA("UIGradient", true)
+                    if uiGrad then uiGrad.Enabled = false end
+                    local uiGradWin = msg:FindFirstChild("UIGradientWin", true)
+                    if uiGradWin then uiGradWin.Enabled = true end
+
+                    task.spawn(function()
+                        task.wait(1)
+                        TweenService:Create(msg, TweenInfo.new(1), {TextTransparency = 1, TextStrokeTransparency = 1}):Play()
                     end)
-                end)
-                return "supercomplete"
+                end
             end
-        else
-            if skillcheckOrigCB then
-                scEvent.OnClientInvoke = skillcheckOrigCB
-                skillcheckOrigCB = nil
-            else
-                scEvent.OnClientInvoke = nil
-            end
-        end
+        end)
     end
 
-    -- 2. Arcade Machine Calibrations
-    local arcEvent = events:FindFirstChild("ArcadeUpdate") or events:FindFirstChild("ArcadeSkillcheckUpdate") or events:FindFirstChild("CalibrationUpdate")
-    if arcEvent and arcEvent:IsA("RemoteFunction") then
-        if state then
-            if getcallbackvalue and not arcadeOrigCB then
-                pcall(function() arcadeOrigCB = getcallbackvalue(arcEvent, "OnClientInvoke") end)
-            end
-            arcEvent.OnClientInvoke = function(...)
-                task.spawn(function()
-                    pcall(function()
-                        local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-                        if not playerGui then return end
-                        for _, gui in ipairs(playerGui:GetChildren()) do
-                            if gui:IsA("ScreenGui") then
-                                local arcFrame = gui:FindFirstChild("ArcadeFrame", true) or gui:FindFirstChild("MinigameFrame", true)
-                                if arcFrame then arcFrame.Visible = false end
-                            end
-                        end
-                    end)
-                end)
-                return "supercomplete"
-            end
-        else
-            if arcadeOrigCB then
-                arcEvent.OnClientInvoke = arcadeOrigCB
-                arcadeOrigCB = nil
-            else
-                arcEvent.OnClientInvoke = nil
+    local remoteNames = {
+        "SkillcheckUpdate", "ArcadeUpdate", "ArcadeSkillcheckUpdate",
+        "CalibrationUpdate", "ArcadeSkillcheck", "ArcadeEvent",
+        "CalibrationEvent", "MinigameUpdate", "SkillcheckResult",
+        "MinigameEvent", "ArcadeResult", "CalibrationResult"
+    }
+
+    for _, rName in ipairs(remoteNames) do
+        local remote = events:FindFirstChild(rName, true) or ReplicatedStorage:FindFirstChild(rName, true)
+        if remote then
+            if remote:IsA("RemoteFunction") then
+                if state then
+                    if getcallbackvalue and not originalCallbacks[remote] then
+                        pcall(function() originalCallbacks[remote] = getcallbackvalue(remote, "OnClientInvoke") end)
+                    end
+                    remote.OnClientInvoke = function(...)
+                        task.spawn(hideMinigameGuis)
+                        return "supercomplete"
+                    end
+                else
+                    if originalCallbacks[remote] then
+                        remote.OnClientInvoke = originalCallbacks[remote]
+                        originalCallbacks[remote] = nil
+                    else
+                        remote.OnClientInvoke = nil
+                    end
+                end
+            elseif remote:IsA("RemoteEvent") then
+                if state then
+                    if not originalCallbacks[remote] then
+                        pcall(function()
+                            originalCallbacks[remote] = remote.OnClientEvent:Connect(function(...)
+                                hideMinigameGuis()
+                                pcall(function() remote:FireServer("supercomplete", true, 1) end)
+                            end)
+                        end)
+                    end
+                else
+                    if originalCallbacks[remote] then
+                        pcall(function() originalCallbacks[remote]:Disconnect() end)
+                        originalCallbacks[remote] = nil
+                    end
+                end
             end
         end
     end
@@ -1135,6 +1150,17 @@ end
 
 local function EnableInstantSkillcheck(state)
     ApplyInstantSkillcheck(state)
+end
+
+local function FireSprint(state)
+    pcall(function()
+        local ReplicatedStorage = game:GetService("ReplicatedStorage")
+        local events = ReplicatedStorage:FindFirstChild("Events") or ReplicatedStorage
+        local sprintEvent = events:FindFirstChild("SprintEvent") or events:FindFirstChild("Sprint")
+        if sprintEvent and sprintEvent:IsA("RemoteEvent") then
+            sprintEvent:FireServer(state)
+        end
+    end)
 end
 
 local function GetMapContainer()
@@ -1172,8 +1198,22 @@ local function TriggerPrompt(prompt)
     end)
 end
 
+local function UprightCFrame(cf)
+    if not cf then return nil end
+    local pos = cf.Position
+    local look = cf.LookVector
+    local flatLook = Vector3.new(look.X, 0, look.Z)
+    if flatLook.Magnitude < 0.001 then
+        flatLook = Vector3.new(0, 0, -1)
+    else
+        flatLook = flatLook.Unit
+    end
+    return CFrame.new(pos, pos + flatLook)
+end
+
 local function SafeTeleport(hrp, targetCF)
     if not hrp or not targetCF then return end
+    targetCF = UprightCFrame(targetCF)
     pcall(function()
         hrp.AssemblyLinearVelocity = Vector3.zero
         hrp.AssemblyAngularVelocity = Vector3.zero
@@ -1201,20 +1241,53 @@ local function CountHealItemsInInventory()
     return count
 end
 
+local function IsInventoryFull()
+    local igp = workspace:FindFirstChild("InGamePlayers")
+    local pm = igp and igp:FindFirstChild(LocalPlayer.Name)
+    local inv = pm and pm:FindFirstChild("Inventory")
+    if not inv then return false end
+
+    local filledSlots = 0
+    local totalSlots = 0
+    for _, slot in ipairs(inv:GetChildren()) do
+        if slot:IsA("StringValue") then
+            totalSlots = totalSlots + 1
+            if slot.Value ~= "" and slot.Value ~= "None" then
+                filledSlots = filledSlots + 1
+            end
+        end
+    end
+    return totalSlots > 0 and filledSlots >= totalSlots
+end
+
 local function FindElevatorBase()
-    local elevs = workspace:FindFirstChild("Elevators")
+    local elevs = workspace:FindFirstChild("Elevators") or workspace:FindFirstChild("Elevator")
     if elevs then
-        local elev = elevs:FindFirstChild("Elevator")
-        if elev then
-            local base = elev:FindFirstChild("Base")
-            if base and base:IsA("BasePart") then
-                return base
+        if elevs:IsA("Model") then
+            local base = elevs:FindFirstChild("Base") or elevs.PrimaryPart or elevs:FindFirstChildWhichIsA("BasePart", true)
+            if base and base:IsA("BasePart") then return base end
+        else
+            for _, elev in ipairs(elevs:GetChildren()) do
+                if elev:IsA("Model") then
+                    local base = elev:FindFirstChild("Base") or elev.PrimaryPart or elev:FindFirstChildWhichIsA("BasePart", true)
+                    if base and base:IsA("BasePart") then return base end
+                end
             end
         end
     end
     local container = GetMapContainer()
-    for _, d in ipairs(container:GetDescendants()) do
-        if d:IsA("Model") and (d.Name == "FakeElevator" or d.Name:find("Elevator")) then
+    if container then
+        for _, d in ipairs(container:GetDescendants()) do
+            if d:IsA("Model") and (d.Name:find("Elevator") or d.Name == "FakeElevator") then
+                local base = d:FindFirstChild("Base") or d.PrimaryPart or d:FindFirstChildWhichIsA("BasePart", true)
+                if base and base:IsA("BasePart") then
+                    return base
+                end
+            end
+        end
+    end
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if d:IsA("Model") and (d.Name:find("Elevator") or d.Name == "FakeElevator") then
             local base = d:FindFirstChild("Base") or d.PrimaryPart or d:FindFirstChildWhichIsA("BasePart", true)
             if base and base:IsA("BasePart") then
                 return base
@@ -1224,15 +1297,64 @@ local function FindElevatorBase()
     return nil
 end
 
+local function FindFakeElevatorBase()
+    local container = GetMapContainer()
+    local base = nil
+    if container then
+        for _, d in ipairs(container:GetDescendants()) do
+            if d:IsA("Model") and d.Name == "FakeElevator" then
+                base = d:FindFirstChild("Base") or d.PrimaryPart or d:FindFirstChildWhichIsA("BasePart", true)
+                if base and base:IsA("BasePart") then break end
+            end
+        end
+    end
+    if not base then
+        for _, d in ipairs(workspace:GetDescendants()) do
+            if d:IsA("Model") and d.Name == "FakeElevator" then
+                base = d:FindFirstChild("Base") or d.PrimaryPart or d:FindFirstChildWhichIsA("BasePart", true)
+                if base and base:IsA("BasePart") then break end
+            end
+        end
+    end
+    if not base then
+        base = FindElevatorBase()
+    end
+
+    if base and base:IsA("BasePart") then
+        if not base:FindFirstChild("BExtractSafetyPad") then
+            pcall(function()
+                local pad = Instance.new("Part")
+                pad.Name = "BExtractSafetyPad"
+                pad.Size = base.Size + Vector3.new(4, 2, 4)
+                pad.CFrame = base.CFrame * CFrame.new(0, -0.5, 0)
+                pad.Anchored = true
+                pad.CanCollide = true
+                pad.Transparency = 1
+                pad.Parent = base
+            end)
+        end
+        return base
+    end
+    return nil
+end
+
 local function IsThreatNearby(hrpPosition, detectionRadius)
     local container = GetMapContainer()
     local radius = detectionRadius or 60
+    local elevs = workspace:FindFirstChild("Elevators") or workspace:FindFirstChild("Elevator")
+    local fakeElev = elevs and elevs:FindFirstChild("FakeElevator", true)
+    local safePos = fakeElev and (fakeElev:FindFirstChild("Base") or fakeElev.PrimaryPart) and (fakeElev:FindFirstChild("Base") or fakeElev.PrimaryPart).Position
+
     for _, desc in ipairs(container:GetDescendants()) do
         if desc:IsA("Model") then
             local name = desc.Name
-            if name:find("Monster") or name:find("BlotHand") or name == "SproutTendril" or CollectionService:HasTag(desc, "Twisted") then
+            if name:find("Twisted") or name:find("Monster") or name:find("BlotHand") or name == "SproutTendril" or CollectionService:HasTag(desc, "Twisted") then
                 local monsterHrp = desc.PrimaryPart or desc:FindFirstChild("HumanoidRootPart") or desc:FindFirstChildWhichIsA("BasePart", true)
                 if monsterHrp then
+                    -- Ignore monsters that are wandering near the safe base position
+                    if safePos and (safePos - monsterHrp.Position).Magnitude <= 35 then
+                        continue
+                    end
                     local dist = (hrpPosition - monsterHrp.Position).Magnitude
                     if dist <= radius then
                         return true
@@ -1244,13 +1366,71 @@ local function IsThreatNearby(hrpPosition, detectionRadius)
     return false
 end
 
+local function IsPlayerSeen()
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if playerGui then
+        local mIcon = playerGui:FindFirstChild("MonsterIcon", true)
+        if mIcon and (mIcon:IsA("ImageLabel") or mIcon:IsA("ImageButton")) then
+            if mIcon.Visible and mIcon.ImageTransparency < 0.9 then
+                return true
+            end
+        end
+
+        local eyeIcon = playerGui:FindFirstChild("EyeIcon", true) or playerGui:FindFirstChild("SeenIcon", true)
+        if eyeIcon and (eyeIcon:IsA("ImageLabel") or eyeIcon:IsA("ImageButton")) then
+            if eyeIcon.Visible and eyeIcon.ImageTransparency < 0.9 then
+                return true
+            end
+        end
+    end
+
+    local igp = workspace:FindFirstChild("InGamePlayers")
+    local pm = igp and igp:FindFirstChild(LocalPlayer.Name)
+    if pm then
+        local chased = pm:FindFirstChild("Chased") or pm:FindFirstChild("Targeted") or pm:FindFirstChild("BeingHunted")
+        if chased and chased:IsA("BoolValue") and chased.Value == true then
+            return true
+        end
+    end
+
+    return false
+end
+
 local lastThreatTime = 0
 local SEEN_SAFETY_COOLDOWN = 3.5
+
+-- Track seen Twisteds for Research Mode (declared before IsCapsule to ensure scope visibility)
+local SeenTwisteds = {}
+local lastMapContainer = nil
 
 local function IsArcadeMachine(model)
     if not model or not model:IsA("Model") then return false end
     local name = model.Name
-    if name:find("Arcade") or name:find("Gigi") or name:find("GigiHoard") or name:find("ArcadeMachine") then
+    if name:find("Arcade") or name:find("Gigi") or name:find("GigiHoard") or name:find("ArcadeMachine") or name:find("Calibration") or name:find("Barnaby") or name:find("Treadmill") or name:find("Machine") then
+        return true
+    end
+    local prompt = model:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if prompt then
+        local act = (prompt.ActionText or ""):lower()
+        local obj = (prompt.ObjectText or ""):lower()
+        if act:find("calibrate") or act:find("fix") or act:find("repair") or act:find("play") or obj:find("arcade") or obj:find("gigi") or obj:find("calibration") or obj:find("barnaby") or obj:find("machine") then
+            return true
+        end
+    end
+    return false
+end
+
+local function IsMachineCompleted(desc)
+    if not desc or not desc:IsA("Model") then return true end
+    local stats = desc:FindFirstChild("Stats") or desc:FindFirstChild("GeneratorStats") or desc:FindFirstChild("Values") or desc:FindFirstChild("MachineStats")
+    if stats then
+        local compVal = stats:FindFirstChild("Completed") or stats:FindFirstChild("IsCompleted") or stats:FindFirstChild("Done") or stats:FindFirstChild("Calibrated")
+        if compVal and compVal:IsA("BoolValue") then
+            return compVal.Value == true
+        end
+    end
+    local prompt = desc:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if prompt and not prompt.Enabled then
         return true
     end
     return false
@@ -1258,10 +1438,21 @@ end
 
 local function AllGeneratorsCompleted(container)
     container = container or GetMapContainer()
+    local info = workspace:FindFirstChild("Info")
+    if info then
+        local comp = info:FindFirstChild("GeneratorsCompleted") or info:FindFirstChild("CompletedGenerators")
+        local req = info:FindFirstChild("RequiredGenerators") or info:FindFirstChild("GeneratorsRequired")
+        if comp and req and comp:IsA("ValueBase") and req:IsA("ValueBase") then
+            if comp.Value >= req.Value and req.Value > 0 then
+                return true
+            end
+        end
+    end
+
     local totalGens = 0
     local completedGens = 0
     for _, desc in ipairs(container:GetDescendants()) do
-        if desc:IsA("Model") and desc.Name:find("Generator") and not IsArcadeMachine(desc) then
+        if desc:IsA("Model") and desc.Name:find("Generator") then
             totalGens = totalGens + 1
             local stats = desc:FindFirstChild("Stats")
             local isCompleted = stats and stats:FindFirstChild("Completed") and stats.Completed.Value == true
@@ -1273,11 +1464,24 @@ local function AllGeneratorsCompleted(container)
     return totalGens > 0 and (totalGens == completedGens)
 end
 
+local function IsFakeCapsule(name)
+    if not name then return false end
+    return name == "FakeCapsule" or name == "FakeResearchCapsule" or name:find("FakeCapsule") ~= nil or name:find("RodgerCapsule") ~= nil
+end
+
+local function IsCapsule(name)
+    if not name then return false end
+    if IsFakeCapsule(name) then
+        return SettingsState.ResearchMode == true and not (SeenTwisteds["Rodger"] or SeenTwisteds["RodgerSeen"])
+    end
+    return name == "ResearchCapsule" or name:find("Capsule") ~= nil
+end
+
 local autofarmStartTime = 0
 
 local lastItemUseTick = 0
 local function AutoUseInventoryItems(isDecoding)
-    if tick() - lastItemUseTick < 0.5 then return end
+    if tick() - lastItemUseTick < 0.1 then return end
     local char, hrp, hum = GetCharacterComponents()
     if not char or not hum then return end
 
@@ -1304,22 +1508,24 @@ local function AutoUseInventoryItems(isDecoding)
                 if curHp <= 1 then shouldUse = true end
             elseif itemName == "Bandage" then
                 if curHp < maxHp then shouldUse = true end
-            elseif itemName ~= "Tape" and itemName ~= "ResearchCapsule" then
+            elseif itemName ~= "Tape" and not IsCapsule(itemName) then
                 shouldUse = true
             end
 
             if shouldUse then
                 lastItemUseTick = tick()
 
-                -- Pop / PopBottle special handling: make character walk/run before using
+                -- Pop / PopBottle special handling: walk and run in a random direction before consuming
                 if itemName == "Pop" or itemName == "PopBottle" or itemName:find("Pop") then
                     pcall(function()
                         FireSprint(true)
-                        if hum then
-                            hum:Move(Vector3.new(0, 0, -1), true)
+                        if hum and hrp then
+                            local angle = math.rad(math.random(0, 360))
+                            local randomDir = Vector3.new(math.cos(angle), 0, math.sin(angle))
+                            hum:Move(randomDir, false)
                         end
+                        task.wait(0.08)
                     end)
-                    task.wait(0.05)
                 end
 
                 pcall(function()
@@ -1329,62 +1535,190 @@ local function AutoUseInventoryItems(isDecoding)
                         local tool = char:FindFirstChild(itemName) or LocalPlayer.Backpack:FindFirstChild(itemName)
                         if tool then
                             hum:EquipTool(tool)
-                            task.wait(0.05)
+                            task.wait(0.02)
                             tool:Activate()
                         end
                     end
                 end)
+
+                if itemName == "Pop" or itemName == "PopBottle" or itemName:find("Pop") then
+                    task.spawn(function()
+                        task.wait(0.2)
+                        FireSprint(false)
+                    end)
+                end
                 return
             end
         end
     end
 end
 
--- Track seen Twisteds for Research Mode
-local SeenTwisteds = {}
-local lastMapContainer = nil
+-- Track Dandy Store Purchases
+local BoughtPrompts = {}
+local lastDandyStoreState = false
 
 local function DoAutoBuy(hrp)
-    local elevs = workspace:FindFirstChild("Elevators")
-    local elev = elevs and elevs:FindFirstChild("Elevator")
-    local dandyStore = elev and elev:FindFirstChild("DandyStore")
-    if not dandyStore then return end
+    if IsInventoryFull() then return end
 
     local info = workspace:FindFirstChild("Info")
     local storeOpen = info and info:FindFirstChild("DandyStoreOpen")
-    if storeOpen and storeOpen:IsA("BoolValue") and storeOpen.Value == false then return end
+    local isOpen = storeOpen and storeOpen:IsA("BoolValue") and storeOpen.Value == true
 
+    -- Reset bought tracking when store closes or re-opens
+    if not isOpen then
+        if lastDandyStoreState then
+            table.clear(BoughtPrompts)
+            lastDandyStoreState = false
+        end
+        return
+    end
+    lastDandyStoreState = true
+
+    local elevs = workspace:FindFirstChild("Elevators") or workspace:FindFirstChild("Elevator")
+    local elev = elevs and (elevs:IsA("Model") and elevs or (elevs:FindFirstChild("Elevator") or elevs:FindFirstChildWhichIsA("Model")))
+    local dandyStore = elev and elev:FindFirstChild("DandyStore")
+    if not dandyStore then return end
+
+    local availablePrompts = {}
     for _, child in ipairs(dandyStore:GetDescendants()) do
         if child:IsA("ProximityPrompt") then
             local parentModel = child.Parent
-            local handle = parentModel:IsA("BasePart") and parentModel or parentModel:FindFirstChildWhichIsA("BasePart", true)
-            if handle then
-                if (hrp.Position - handle.Position).Magnitude > 4 then
-                    SafeTeleport(hrp, handle.CFrame * CFrame.new(0, 3, 0))
-                    task.wait(0.08)
+            local isBought = BoughtPrompts[child] or (parentModel and BoughtPrompts[parentModel])
+            if not child.Enabled then isBought = true end
+            if parentModel then
+                local bVal = parentModel:FindFirstChild("Bought") or parentModel:FindFirstChild("SoldOut") or parentModel:FindFirstChild("Purchased")
+                if bVal and bVal:IsA("BoolValue") and bVal.Value == true then
+                    isBought = true
                 end
-                TriggerPrompt(child)
             end
+
+            if not isBought then
+                table.insert(availablePrompts, child)
+            end
+        end
+    end
+
+    -- Stop teleporting to Dandy's store if all items have already been bought
+    if #availablePrompts == 0 then return end
+
+    -- Buy available items
+    for _, prompt in ipairs(availablePrompts) do
+        local parentModel = prompt.Parent
+        local handle = parentModel and (parentModel:IsA("BasePart") and parentModel or parentModel:FindFirstChildWhichIsA("BasePart", true))
+        if handle then
+            if (hrp.Position - handle.Position).Magnitude > 4 then
+                SafeTeleport(hrp, handle.CFrame * CFrame.new(0, 3, 0))
+                task.wait(0.05)
+            end
+            TriggerPrompt(prompt)
+            BoughtPrompts[prompt] = true
+            if parentModel then BoughtPrompts[parentModel] = true end
+            task.wait(0.05)
+            return
         end
     end
 end
 
-local CardPriorities = {
-    ["speed"] = 100,
-    ["movement"] = 95,
-    ["run"] = 95,
-    ["extraction"] = 90,
-    ["decode"] = 90,
-    ["machine"] = 85,
-    ["skillcheck"] = 85,
-    ["stamina"] = 80,
-    ["health"] = 75,
-    ["heal"] = 75,
-    ["stealth"] = 70,
-    ["tape"] = 65,
-    ["capsule"] = 60,
-    ["item"] = 55
+local skillcheckOrigCB = nil
+
+local function ApplyInstantSkillcheck(state)
+    local ok, hi = pcall(function()
+        local ReplicatedStorage = game:GetService("ReplicatedStorage")
+        local events = ReplicatedStorage:FindFirstChild("Events") or ReplicatedStorage
+        return events:FindFirstChild("SkillcheckUpdate")
+    end)
+    if not ok or not hi or not hi:IsA("RemoteFunction") then return end
+
+    if state then
+        if getcallbackvalue and not skillcheckOrigCB then
+            pcall(function()
+                skillcheckOrigCB = getcallbackvalue(hi, "OnClientInvoke")
+            end)
+        end
+        hi.OnClientInvoke = function(...)
+            task.spawn(function()
+                pcall(function()
+                    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+                    local gui = playerGui and playerGui:FindFirstChild("ScreenGui")
+                    if gui then
+                        local menu = gui:FindFirstChild("Menu")
+                        if menu then
+                            local scf = menu:FindFirstChild("SkillCheckFrame")
+                            if scf then scf.Visible = false end
+                            local cal = menu:FindFirstChild("Calibrate")
+                            if cal then cal.Visible = false end
+                            local msg = menu:FindFirstChild("SkillCheckMessage")
+                            if msg then
+                                msg.Text = "Great Job!"
+                                msg.Visible = true
+                                msg.TextTransparency = 0
+                            end
+                        end
+                    end
+                end)
+            end)
+            return "supercomplete"
+        end
+    else
+        if skillcheckOrigCB then
+            hi.OnClientInvoke = skillcheckOrigCB
+            skillcheckOrigCB = nil
+        else
+            hi.OnClientInvoke = nil
+        end
+    end
+end
+
+-- Automated Arcade Machine & Skillcheck Spacebar Auto-Solver
+task.spawn(function()
+    local VirtualInputManager = game:GetService("VirtualInputManager")
+    while true do
+        task.wait(0.08)
+        if SettingsState.AutofarmEnabled then
+            pcall(function()
+                local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+                if not pGui then return end
+                
+                -- Check for active Arcade / Minigame / Calibration frames across PlayerGui
+                for _, gui in ipairs(pGui:GetChildren()) do
+                    if gui:IsA("ScreenGui") and gui.Enabled then
+                        local menu = gui:FindFirstChild("Menu") or gui
+                        local calibrate = menu:FindFirstChild("Calibrate", true) 
+                            or menu:FindFirstChild("Arcade", true) 
+                            or menu:FindFirstChild("Minigame", true)
+                            or menu:FindFirstChild("Calibration", true)
+                        local skillCheck = menu:FindFirstChild("SkillCheckFrame", true)
+                        
+                        local isMinigameActive = (calibrate and calibrate.Visible) or (skillCheck and skillCheck.Visible)
+                        
+                        if isMinigameActive then
+                            -- Auto press Space to jump/navigate obstacles & hit coins
+                            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+                            task.wait(0.02)
+                            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+                        end
+                    end
+                end
+            end)
+        end
+    end
+end)
+
+local CARD_PRIORITY = {
+    DyleFloor = 1,
+    Heal2 = 2, Heal = 2,
+    Elevator = 2, Elevator2 = 2,
+    FrostShield = 2, Glowlight = 2,
+    AbilityCooldown = 2, AbilityCooldown2 = 2,
+    DandyDiscount = 2, PipingTape = 2,
+    PollenShield = 2, Stamina = 2, Stamina2 = 2,
+    Machine = 2, Blackout = 2,
+    RandomItem = 3, RandomItem2 = 3,
 }
+
+local HEAL_CARDS = { Heal2 = true, Heal = true }
+local lastVoteTime = 0
+local VOTE_SPAM_INTERVAL = 0.5
 
 local function ClickGuiButton(button)
     if not button then return end
@@ -1406,75 +1740,85 @@ end
 
 local function AutoVoteBestCard()
     if not SettingsState.AutoVoteCards then return end
+    if tick() - lastVoteTime < VOTE_SPAM_INTERVAL then return end
 
-    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    if not playerGui then return end
+    local info = workspace:FindFirstChild("Info")
+    if not info then return end
 
-    local cardGuis = {}
-    for _, gui in ipairs(playerGui:GetChildren()) do
-        if gui:IsA("ScreenGui") and gui.Enabled then
-            local name = gui.Name
-            if name:find("Card") or name:find("Vote") or name:find("Reward") or name:find("Choice") then
-                table.insert(cardGuis, gui)
-            end
+    local cvBool = info:FindFirstChild("CardVoting")
+    if not cvBool or not cvBool:IsA("BoolValue") or not cvBool.Value then return end
+
+    local cvFolder = info:FindFirstChild("CardVote")
+    if not cvFolder then return end
+
+    local cards = {}
+    for _, child in ipairs(cvFolder:GetChildren()) do
+        if not Players:FindFirstChild(child.Name) then
+            table.insert(cards, child)
+        end
+    end
+    if #cards == 0 then return end
+
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildWhichIsA("Humanoid")
+    local igp = workspace:FindFirstChild("InGamePlayers")
+    local pm = igp and igp:FindFirstChild(LocalPlayer.Name)
+    local st = pm and pm:FindFirstChild("Stats")
+    local maxHp = (st and st:FindFirstChild("Health") and st.Health.Value) or 3
+    local curHp = (hum and hum.Health) or maxHp
+    local isFull = (curHp >= maxHp)
+
+    local best, bestTier = nil, 999
+    for _, card in ipairs(cards) do
+        local tier = CARD_PRIORITY[card.Name] or 4
+        if HEAL_CARDS[card.Name] and isFull then tier = 5 end
+        if tier < bestTier then
+            bestTier = tier
+            best = card
         end
     end
 
-    for _, cardGui in ipairs(cardGuis) do
-        local cardOptions = {}
-        for _, child in ipairs(cardGui:GetDescendants()) do
-            if child:IsA("GuiObject") and child.Visible then
-                local childName = child.Name
-                if childName:find("Card") or childName:find("Option") or childName:find("Choice") or childName:find("Button") then
-                    local btn = child:IsA("GuiButton") and child or child:FindFirstChildWhichIsA("GuiButton", true)
-                    if btn then
-                        table.insert(cardOptions, { container = child, button = btn })
-                    end
-                end
-            end
+    if not best then return end
+
+    local votesFolder = best:FindFirstChild("Votes")
+    if votesFolder then
+        local alreadyVoted = votesFolder:FindFirstChild(LocalPlayer.Name)
+        if alreadyVoted then return end
+    end
+
+    local myVote = cvFolder:FindFirstChild(LocalPlayer.Name)
+    if myVote then
+        if myVote.Value == best.Name or (myVote:IsA("StringValue") and myVote.Value == best.Name) then
+            return
         end
+    end
 
-        if #cardOptions > 0 then
-            local bestScore = -1
-            local bestOption = nil
+    lastVoteTime = tick()
 
-            for _, opt in ipairs(cardOptions) do
-                local textContent = ""
-                for _, desc in ipairs(opt.container:GetDescendants()) do
-                    if desc:IsA("TextLabel") or desc:IsA("TextButton") or desc:IsA("TextBox") then
-                        textContent = textContent .. " " .. desc.Text:lower()
-                    end
-                end
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    local events = ReplicatedStorage:FindFirstChild("Events") or ReplicatedStorage
+    local cardVoteEvent = events:FindFirstChild("CardVoteEvent") or events:FindFirstChild("CardVote") or events:FindFirstChild("VoteCard")
 
-                local score = 10
-                for keyword, kwScore in pairs(CardPriorities) do
-                    if textContent:find(keyword) then
-                        if kwScore > score then
-                            score = kwScore
+    if cardVoteEvent and cardVoteEvent:IsA("RemoteEvent") then
+        pcall(function() cardVoteEvent:FireServer(best) end)
+    end
+
+    -- GUI Button fallback
+    pcall(function()
+        local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+        if not playerGui then return end
+        for _, gui in ipairs(playerGui:GetChildren()) do
+            if gui:IsA("ScreenGui") and gui.Enabled then
+                for _, desc in ipairs(gui:GetDescendants()) do
+                    if (desc:IsA("GuiButton") or desc:IsA("TextButton") or desc:IsA("ImageButton")) and desc.Visible then
+                        if desc.Name == best.Name or (desc.Parent and desc.Parent.Name == best.Name) then
+                            ClickGuiButton(desc)
                         end
                     end
                 end
-
-                if score > bestScore then
-                    bestScore = score
-                    bestOption = opt
-                end
-            end
-
-            if bestOption and bestOption.button then
-                ClickGuiButton(bestOption.button)
-                local cardRemotes = { "VoteCard", "CardVote", "SelectCard", "ChooseCard", "CardSelected" }
-                local rs = game:GetService("ReplicatedStorage")
-                for _, rName in ipairs(cardRemotes) do
-                    local remote = rs:FindFirstChild(rName, true) or workspace:FindFirstChild(rName, true)
-                    if remote and remote:IsA("RemoteEvent") then
-                        pcall(function() remote:FireServer(bestOption.button.Name) end)
-                        pcall(function() remote:FireServer(bestOption.container.Name) end)
-                    end
-                end
             end
         end
-    end
+    end)
 end
 
 local function ExecuteAutofarmStep()
@@ -1499,7 +1843,7 @@ local function ExecuteAutofarmStep()
         table.clear(SeenTwisteds)
     end
 
-    local safeBase = FindElevatorBase()
+    local safeBase = FindFakeElevatorBase()
     local safePos = safeBase and (safeBase.CFrame * CFrame.new(0, 3, 0)).Position or hrp.Position
 
     -- Check Dandy Store auto-buy
@@ -1516,15 +1860,17 @@ local function ExecuteAutofarmStep()
     -- Automatically use inventory items based on health & decoding state
     AutoUseInventoryItems(isDecoding)
 
-    -- 2. Research Mode: Teleport above each unseen Twisted once, wait for sight detection, then teleport to safe elevator base and never visit them again
+    -- 2. Research Mode: Teleport in front of each unseen Twisted once, wait for sight detection, then teleport to safe elevator base
     if SettingsState.ResearchMode then
         for _, desc in ipairs(container:GetDescendants()) do
-            if desc:IsA("Model") and (desc.Name:find("Monster") or CollectionService:HasTag(desc, "Twisted")) then
+            if desc:IsA("Model") and (desc.Name:find("Twisted") or desc.Name:find("Monster") or CollectionService:HasTag(desc, "Twisted")) then
                 -- Ignore Connie as she cannot see the player
                 if desc.Name:find("Connie") then continue end
+                -- Ignore Rodger if Rodger has already been encountered/seen
+                if desc.Name:find("Rodger") and (SeenTwisteds["Rodger"] or SeenTwisteds["RodgerSeen"]) then continue end
 
                 local monsterId = desc:GetDebugId() or desc.Name
-                -- Check both model reference and ID to prevent repeat teleports
+                -- Check model reference, debug ID, and monster name to prevent repeat teleports
                 if not SeenTwisteds[desc] and not SeenTwisteds[monsterId] and not SeenTwisteds[desc.Name] then
                     local monsterHrp = desc.PrimaryPart or desc:FindFirstChild("HumanoidRootPart") or desc:FindFirstChildWhichIsA("BasePart", true)
                     if monsterHrp and monsterHrp.Parent then
@@ -1532,34 +1878,48 @@ local function ExecuteAutofarmStep()
                         SeenTwisteds[desc] = true
                         SeenTwisteds[monsterId] = true
                         SeenTwisteds[desc.Name] = true
+                        if desc.Name:find("Rodger") then
+                            SeenTwisteds["Rodger"] = true
+                            SeenTwisteds["RodgerSeen"] = true
+                            SeenTwisteds["RodgerMonster"] = true
+                            SeenTwisteds["TwistedRodger"] = true
+                        end
 
                         -- Create invisible temporary hovering platform so gravity doesn't pull the player down
                         local hoverPad = Instance.new("Part")
                         hoverPad.Name = "ResearchHoverPad"
-                        hoverPad.Size = Vector3.new(16, 1, 16)
+                        hoverPad.Size = Vector3.new(12, 1, 12)
                         hoverPad.Anchored = true
                         hoverPad.CanCollide = true
                         hoverPad.Transparency = 1
                         hoverPad.Parent = workspace
 
-                        -- Position character & platform 18 studs directly above the monster to keep out of Goob/Twisted reach
-                        local hoverCF = monsterHrp.CFrame * CFrame.new(0, 18, 0)
+                        -- Position 10 studs in front of the Twisted facing them at 3 studs height so they spot the player immediately
+                        local lookVec = monsterHrp.CFrame.LookVector
+                        local flatLook = Vector3.new(lookVec.X, 0, lookVec.Z)
+                        if flatLook.Magnitude > 0.001 then flatLook = flatLook.Unit else flatLook = Vector3.new(0, 0, -1) end
+                        local targetPos = monsterHrp.Position + (flatLook * 10) + Vector3.new(0, 3, 0)
+                        local hoverCF = CFrame.new(targetPos, targetPos - flatLook)
+
                         hoverPad.CFrame = hoverCF * CFrame.new(0, -3.5, 0)
                         SafeTeleport(hrp, hoverCF)
                         FireSprint(true)
 
-                        -- Hold position above until sight detection triggers or max wait timeout (1.5s)
+                        -- Hold position in front until sight detection triggers or max wait timeout (1.2s)
                         local startWait = tick()
-                        local spotted = false
-                        while tick() - startWait < 1.5 do
+                        while tick() - startWait < 1.2 do
                             local mIcon = LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("MonsterIcon", true)
-                            local isSeen = mIcon and mIcon.ImageTransparency < 1
-                            if isSeen or IsThreatNearby(hrp.Position, 35) then
-                                spotted = true
+                            local eyeIcon = LocalPlayer:FindFirstChild("PlayerGui") and (LocalPlayer.PlayerGui:FindFirstChild("EyeIcon", true) or LocalPlayer.PlayerGui:FindFirstChild("SeenIcon", true))
+                            local isSeen = (mIcon and mIcon.Visible and mIcon.ImageTransparency < 0.9) or (eyeIcon and eyeIcon.Visible and eyeIcon.ImageTransparency < 0.9)
+                            if isSeen or IsThreatNearby(hrp.Position, 25) then
                                 break
                             end
                             if monsterHrp and monsterHrp.Parent then
-                                local currentHoverCF = monsterHrp.CFrame * CFrame.new(0, 18, 0)
+                                local currLook = monsterHrp.CFrame.LookVector
+                                local currFlat = Vector3.new(currLook.X, 0, currLook.Z)
+                                if currFlat.Magnitude > 0.001 then currFlat = currFlat.Unit else currFlat = Vector3.new(0, 0, -1) end
+                                local currentTargetPos = monsterHrp.Position + (currFlat * 10) + Vector3.new(0, 3, 0)
+                                local currentHoverCF = CFrame.new(currentTargetPos, currentTargetPos - currFlat)
                                 hoverPad.CFrame = currentHoverCF * CFrame.new(0, -3.5, 0)
                                 SafeTeleport(hrp, currentHoverCF)
                             end
@@ -1568,9 +1928,6 @@ local function ExecuteAutofarmStep()
 
                         hoverPad:Destroy()
 
-                        -- Trigger threat safety cooldown so threat check keeps player at safe base
-                        lastThreatTime = tick()
-
                         -- Teleport away immediately to safe elevator base
                         if safeBase then
                             SafeTeleport(hrp, safeBase.CFrame * CFrame.new(0, 3, 0))
@@ -1578,7 +1935,7 @@ local function ExecuteAutofarmStep()
                             SafeTeleport(hrp, CFrame.new(safePos))
                         end
 
-                        task.wait(0.05)
+                        task.wait(0.1)
                         return
                     end
                 end
@@ -1586,14 +1943,17 @@ local function ExecuteAutofarmStep()
         end
     end
 
-    -- Threat Check: Evaluate if any monster is within 45 studs
-    local threatActive = IsThreatNearby(hrp.Position, 45) or IsThreatNearby(safePos, 45)
+    -- Threat Check: Only evacuate if player is actually SEEN by a Twisted or within 15 studs touch danger
+    local isSeen = IsPlayerSeen()
+    local isDangerouslyClose = IsThreatNearby(hrp.Position, 15)
+    local threatActive = isSeen or isDangerouslyClose
+
     if threatActive then
         lastThreatTime = tick()
     end
 
-    -- Threat Evacuation & Waiting at Safe Base
-    if threatActive or (tick() - lastThreatTime < SEEN_SAFETY_COOLDOWN) then
+    -- Threat Evacuation & Waiting at Safe Base (Only triggers when actively SEEN or in immediate 15-stud contact danger)
+    if threatActive or (lastThreatTime > 0 and (tick() - lastThreatTime < SEEN_SAFETY_COOLDOWN)) then
         if safeBase then
             local safeTargetCF = safeBase.CFrame * CFrame.new(0, 3, 0)
             if (hrp.Position - safeTargetCF.Position).Magnitude > 3 then
@@ -1605,32 +1965,77 @@ local function ExecuteAutofarmStep()
 
     -- 3. Items, Tapes & Research Capsules Pickup
     local healCount = CountHealItemsInInventory()
-    local itemsFolder = container:FindFirstChild("Items", true) or workspace:FindFirstChild("Items") or container
+    local isFull = IsInventoryFull()
+    local itemsFolder = container:FindFirstChild("Items", true) or workspace:FindFirstChild("Items")
+
+    local itemCandidates = {}
     if itemsFolder then
         for _, item in ipairs(itemsFolder:GetChildren()) do
-            local itemName = item.Name
-            if itemName:find("GigiHoard") or itemName:find("Gigi") then continue end
-            if SettingsState.DisableTapePickup and itemName == "Tape" then continue end
-            if SettingsState.DisableCapsulePickup and itemName == "ResearchCapsule" then continue end
-            if (itemName == "Bandage" or itemName == "HealthKit") and healCount >= SettingsState.HealLimit then continue end
-
-            local handle = item:IsA("BasePart") and item or item:FindFirstChildWhichIsA("BasePart", true)
-            local prompt = item:FindFirstChildWhichIsA("ProximityPrompt", true)
-            if handle and prompt then
-                local targetCF = handle.CFrame * CFrame.new(0, 2, 0)
-                if (hrp.Position - targetCF.Position).Magnitude > 3 then
-                    SafeTeleport(hrp, targetCF)
-                    task.wait(0.05)
+            table.insert(itemCandidates, item)
+        end
+    else
+        -- Search container descendants for items specifically, ignoring generators, elevators, store, etc.
+        for _, desc in ipairs(container:GetDescendants()) do
+            if desc:IsA("Model") or desc:IsA("BasePart") then
+                local name = desc.Name
+                -- Exclude non-item containers and objects
+                if not (name:find("Generator") or name:find("Arcade") or name:find("Elevator") or name:find("Store") or name:find("Door") or name:find("Monster") or CollectionService:HasTag(desc, "Twisted")) then
+                    local prompt = desc:FindFirstChildWhichIsA("ProximityPrompt", true)
+                    if prompt then
+                        local act = (prompt.ActionText or ""):lower()
+                        local obj = (prompt.ObjectText or ""):lower()
+                        if act:find("pick") or act:find("take") or act:find("grab") or act:find("collect") or obj:find("capsule") or obj:find("tape") or obj:find("item") or IsCapsule(name) or IsFakeCapsule(name) or name == "Tape" or name == "Bandage" or name == "HealthKit" then
+                            table.insert(itemCandidates, desc)
+                        end
+                    end
                 end
-                TriggerPrompt(prompt)
-                return
             end
         end
     end
 
-    -- 4. Generator Extraction (Find safe, uncompleted machine and disconnect if seen)
+    for _, item in ipairs(itemCandidates) do
+        local itemName = item.Name
+        if itemName:find("GigiHoard") or itemName:find("Gigi") then continue end
+        if IsFakeCapsule(itemName) and (not SettingsState.ResearchMode or SeenTwisteds["Rodger"] or SeenTwisteds["RodgerSeen"]) then continue end
+        if SettingsState.DisableTapePickup and itemName == "Tape" then continue end
+        if SettingsState.DisableCapsulePickup and IsCapsule(itemName) then continue end
+        if (itemName == "Bandage" or itemName == "HealthKit") and healCount >= SettingsState.HealLimit then continue end
+        -- Skip regular floor items if inventory is full (Tapes and Research Capsules don't take inventory slots)
+        if isFull and itemName ~= "Tape" and not IsCapsule(itemName) then continue end
+
+        local handle = item:IsA("BasePart") and item or item:FindFirstChildWhichIsA("BasePart", true)
+        local prompt = item:FindFirstChildWhichIsA("ProximityPrompt", true)
+        if handle and prompt then
+            -- Skip item only if a monster is within 10 studs of the item AND player is actively seen
+            if IsThreatNearby(handle.Position, 10) and IsPlayerSeen() then
+                continue
+            end
+
+            local targetCF = handle.CFrame * CFrame.new(0, 2, 0)
+            if (hrp.Position - targetCF.Position).Magnitude > 3 then
+                SafeTeleport(hrp, targetCF)
+                task.wait(0.05)
+            end
+            TriggerPrompt(prompt)
+            return
+        end
+    end
+
+    -- 4. Check if all generators are complete -> Teleport to Elevator
+    if AllGeneratorsCompleted(container) then
+        local elevBase = FindElevatorBase()
+        if elevBase then
+            local targetCF = elevBase.CFrame * CFrame.new(0, 3, 0)
+            if (hrp.Position - targetCF.Position).Magnitude > 3 then
+                SafeTeleport(hrp, targetCF)
+            end
+            return
+        end
+    end
+
+    -- 5. Generator Extraction
     for _, desc in ipairs(container:GetDescendants()) do
-        if desc:IsA("Model") and desc.Name:find("Generator") and not IsArcadeMachine(desc) then
+        if desc:IsA("Model") and desc.Name:find("Generator") then
             local stats = desc:FindFirstChild("Stats")
             local isCompleted = stats and stats:FindFirstChild("Completed") and stats.Completed.Value == true
             if not isCompleted then
@@ -1639,7 +2044,7 @@ local function ExecuteAutofarmStep()
                     -- Verify if this generator has monsters near it (within 40 studs)
                     local genPos = tpPart.Position
                     if IsThreatNearby(genPos, 40) then
-                        -- If player is currently near this threatened machine, cancel interaction
+                        -- If player is currently near this threatened generator, cancel interaction
                         if (hrp.Position - genPos).Magnitude <= 8 then
                             local stopEvent = stats and stats:FindFirstChild("StopInteracting")
                             if stopEvent and stopEvent:IsA("RemoteEvent") then
@@ -1677,7 +2082,7 @@ Tabs["Main"].Icon.TextColor3 = Colors.TextPrimary
 Tabs["Main"].Label.TextColor3 = Colors.TextPrimary
 
 -- Main Page Content
-CreateLabelArea(MainPage, "Notice", "This is a very experimental autofarm for Dandy's World. Please report any bugs you encounter to the developer!", 75)
+CreateLabelArea(MainPage, "⚠️ DISCONTINUED", "BExtract (0.1beta2) is no longer being developed or maintained. This is the final release. Use at your own risk — no further bug fixes or updates will be provided.", 90)
 
 local function GetStatsText()
     local elapsed = autofarmStartTime > 0 and math.floor(tick() - autofarmStartTime) or 0
@@ -1724,6 +2129,61 @@ CreateToggle(MainPage, "Autofarm", "Enables the autofarm!", function(state)
     end
 end)
 
+local function CreateButton(parent, title, desc, callback)
+    local Container = Instance.new("Frame")
+    Container.Size = UDim2.new(1, 0, 0, 55)
+    Container.BackgroundColor3 = Colors.SectionBackground
+    Container.Parent = parent
+    addCorner(Container, 10)
+
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(1, -120, 0, 18)
+    Label.Position = UDim2.new(0, 16, 0, 10)
+    Label.BackgroundTransparency = 1
+    Label.Text = title
+    Label.TextColor3 = Colors.TextPrimary
+    Label.Font = FontPrimary
+    Label.TextSize = 13
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = Container
+
+    local DescLabel = Instance.new("TextLabel")
+    DescLabel.Size = UDim2.new(1, -120, 0, 16)
+    DescLabel.Position = UDim2.new(0, 16, 0, 30)
+    DescLabel.BackgroundTransparency = 1
+    DescLabel.Text = desc
+    DescLabel.TextColor3 = Colors.TextSecondary
+    DescLabel.Font = FontSecondary
+    DescLabel.TextSize = 11
+    DescLabel.TextXAlignment = Enum.TextXAlignment.Left
+    DescLabel.Parent = Container
+
+    local ActionBtn = Instance.new("TextButton")
+    ActionBtn.Size = UDim2.new(0, 90, 0, 26)
+    ActionBtn.Position = UDim2.new(1, -102, 0.5, -13)
+    ActionBtn.BackgroundColor3 = Colors.Accent
+    ActionBtn.Text = "Teleport"
+    ActionBtn.TextColor3 = Color3.fromRGB(20, 15, 25)
+    ActionBtn.Font = FontPrimary
+    ActionBtn.TextSize = 12
+    ActionBtn.Parent = Container
+    addCorner(ActionBtn, 6)
+
+    ActionBtn.MouseButton1Click:Connect(function()
+        if callback then callback() end
+    end)
+end
+
+CreateButton(MainPage, "Teleport to Elevator", "Instantly teleports your character inside the elevator.", function()
+    local _, hrp, _ = GetCharacterComponents()
+    if hrp then
+        local elevBase = FindElevatorBase()
+        if elevBase then
+            SafeTeleport(hrp, elevBase.CFrame * CFrame.new(0, 3, 0))
+        end
+    end
+end)
+
 SessionCard = CreateLabelArea(MainPage, "Session Information", "Waiting for Autofarm to start...", 110)
 
 task.spawn(function()
@@ -1732,7 +2192,10 @@ task.spawn(function()
             if SessionCard then
                 SessionCard.SetText(GetStatsText())
             end
-            pcall(ExecuteAutofarmStep)
+            local ok, err = pcall(ExecuteAutofarmStep)
+            if not ok and err then
+                warn("[BExtract Autofarm Error]:", err)
+            end
         end
         task.wait(SettingsState.UpdateInterval)
     end
