@@ -210,7 +210,7 @@ local VersionTag = Instance.new("TextLabel")
 VersionTag.Size = UDim2.new(0, 72, 0, 20)
 VersionTag.Position = UDim2.new(0, 5, 0.5, -10)
 VersionTag.BackgroundColor3 = Colors.Accent
-VersionTag.Text = "0.1beta2"
+VersionTag.Text = "0.1beta3"
 VersionTag.TextColor3 = Color3.fromRGB(20, 15, 25)
 VersionTag.Font = FontPrimary
 VersionTag.TextSize = 11
@@ -1189,10 +1189,8 @@ local function TriggerPrompt(prompt)
         if fireproximityprompt then
             fireproximityprompt(prompt)
         else
+            -- Force instant triggering without blocking/waiting on hold duration
             prompt:InputHoldBegin()
-            if prompt.HoldDuration > 0 then
-                task.wait(prompt.HoldDuration)
-            end
             prompt:InputHoldEnd()
         end
     end)
@@ -1211,18 +1209,71 @@ local function UprightCFrame(cf)
     return CFrame.new(pos, pos + flatLook)
 end
 
+local function GetGroundCFrame(targetCF)
+    if not targetCF then return nil end
+    local pos = targetCF.Position
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+    raycastParams.IgnoreWater = true
+
+    local char = LocalPlayer.Character
+    if char then
+        raycastParams.FilterObjects = {char}
+    end
+
+    local origin = pos + Vector3.new(0, 15, 0)
+    local direction = Vector3.new(0, -40, 0)
+    local result = workspace:Raycast(origin, direction, raycastParams)
+
+    if result then
+        return UprightCFrame(CFrame.new(result.Position + Vector3.new(0, 3, 0)))
+    end
+    return UprightCFrame(targetCF)
+end
+
 local function SafeTeleport(hrp, targetCF)
     if not hrp or not targetCF then return end
     targetCF = UprightCFrame(targetCF)
+    local char = hrp.Parent
+    if not char then return end
+
+    local distance = (hrp.Position - targetCF.Position).Magnitude
+    if distance < 2 then return end
+
     pcall(function()
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum and hum.Sit then hum.Sit = false end
+
+        -- Try to claim physics ownership of HRP so server can't roll back position
+        pcall(function()
+            if sethiddenproperty then
+                sethiddenproperty(hrp, "NetworkOwnershipRule", 0)
+            end
+        end)
+
         hrp.AssemblyLinearVelocity = Vector3.zero
         hrp.AssemblyAngularVelocity = Vector3.zero
+        char:PivotTo(targetCF)
         hrp.CFrame = targetCF
-        if hrp.Parent then
-            hrp.Parent:PivotTo(targetCF)
-        end
-        hrp.AssemblyLinearVelocity = Vector3.zero
-        hrp.AssemblyAngularVelocity = Vector3.zero
+
+        -- Hold CFrame via PreSimulation for 20 physics frames.
+        -- This fires BEFORE the physics engine reconciles with the server,
+        -- overwriting any server-sent position correction each frame.
+        local frameCount = 0
+        local holdConn
+        holdConn = RunService.PreSimulation:Connect(function()
+            if not hrp or not hrp.Parent then
+                holdConn:Disconnect()
+                return
+            end
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+            hrp.CFrame = targetCF
+            frameCount = frameCount + 1
+            if frameCount >= 20 then
+                holdConn:Disconnect()
+            end
+        end)
     end)
 end
 
@@ -1338,7 +1389,7 @@ local function FindFakeElevatorBase()
     return nil
 end
 
-local function IsThreatNearby(hrpPosition, detectionRadius)
+local function IsThreatNearby(hrpPosition, detectionRadius, ignoreModel)
     local container = GetMapContainer()
     local radius = detectionRadius or 60
     local elevs = workspace:FindFirstChild("Elevators") or workspace:FindFirstChild("Elevator")
@@ -1346,7 +1397,7 @@ local function IsThreatNearby(hrpPosition, detectionRadius)
     local safePos = fakeElev and (fakeElev:FindFirstChild("Base") or fakeElev.PrimaryPart) and (fakeElev:FindFirstChild("Base") or fakeElev.PrimaryPart).Position
 
     for _, desc in ipairs(container:GetDescendants()) do
-        if desc:IsA("Model") then
+        if desc:IsA("Model") and desc ~= ignoreModel then
             local name = desc.Name
             if name:find("Twisted") or name:find("Monster") or name:find("BlotHand") or name == "SproutTendril" or CollectionService:HasTag(desc, "Twisted") then
                 local monsterHrp = desc.PrimaryPart or desc:FindFirstChild("HumanoidRootPart") or desc:FindFirstChildWhichIsA("BasePart", true)
@@ -1911,7 +1962,7 @@ local function ExecuteAutofarmStep()
                             local mIcon = LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("MonsterIcon", true)
                             local eyeIcon = LocalPlayer:FindFirstChild("PlayerGui") and (LocalPlayer.PlayerGui:FindFirstChild("EyeIcon", true) or LocalPlayer.PlayerGui:FindFirstChild("SeenIcon", true))
                             local isSeen = (mIcon and mIcon.Visible and mIcon.ImageTransparency < 0.9) or (eyeIcon and eyeIcon.Visible and eyeIcon.ImageTransparency < 0.9)
-                            if isSeen or IsThreatNearby(hrp.Position, 25) then
+                            if isSeen or IsThreatNearby(hrp.Position, 25, desc) then
                                 break
                             end
                             if monsterHrp and monsterHrp.Parent then
@@ -1943,17 +1994,12 @@ local function ExecuteAutofarmStep()
         end
     end
 
-    -- Threat Check: Only evacuate if player is actually SEEN by a Twisted or within 15 studs touch danger
+    -- Threat Evacuation: Only evacuate if player is actively seen AND monsters are within 15 studs
     local isSeen = IsPlayerSeen()
     local isDangerouslyClose = IsThreatNearby(hrp.Position, 15)
-    local threatActive = isSeen or isDangerouslyClose
 
-    if threatActive then
+    if isSeen and isDangerouslyClose then
         lastThreatTime = tick()
-    end
-
-    -- Threat Evacuation & Waiting at Safe Base (Only triggers when actively SEEN or in immediate 15-stud contact danger)
-    if threatActive or (lastThreatTime > 0 and (tick() - lastThreatTime < SEEN_SAFETY_COOLDOWN)) then
         if safeBase then
             local safeTargetCF = safeBase.CFrame * CFrame.new(0, 3, 0)
             if (hrp.Position - safeTargetCF.Position).Magnitude > 3 then
@@ -2011,11 +2057,14 @@ local function ExecuteAutofarmStep()
                 continue
             end
 
-            local targetCF = handle.CFrame * CFrame.new(0, 2, 0)
-            if (hrp.Position - targetCF.Position).Magnitude > 3 then
-                SafeTeleport(hrp, targetCF)
-                task.wait(0.05)
+            -- Already close enough — just trigger, don't teleport again
+            if (hrp.Position - handle.Position).Magnitude <= 6 then
+                TriggerPrompt(prompt)
+                return
             end
+
+            local targetCF = handle.CFrame * CFrame.new(0, 2, 0)
+            SafeTeleport(hrp, targetCF)
             TriggerPrompt(prompt)
             return
         end
@@ -2026,7 +2075,8 @@ local function ExecuteAutofarmStep()
         local elevBase = FindElevatorBase()
         if elevBase then
             local targetCF = elevBase.CFrame * CFrame.new(0, 3, 0)
-            if (hrp.Position - targetCF.Position).Magnitude > 3 then
+            -- Only teleport if not already at the elevator
+            if (hrp.Position - targetCF.Position).Magnitude > 8 then
                 SafeTeleport(hrp, targetCF)
             end
             return
@@ -2054,12 +2104,17 @@ local function ExecuteAutofarmStep()
                         continue -- Skip this generator and check the next available one
                     end
 
-                    local targetCF = tpPart.CFrame * CFrame.new(0, 2, 0)
-                    if (hrp.Position - targetCF.Position).Magnitude > 3 then
-                        SafeTeleport(hrp, targetCF)
-                        task.wait(0.05)
+                    -- Don't teleport again if already decoding or already sitting at this generator
+                    if isDecoding or (hrp.Position - genPos).Magnitude <= 6 then
+                        local prompt = desc:FindFirstChildWhichIsA("ProximityPrompt", true)
+                        if prompt then TriggerPrompt(prompt) end
+                        return
                     end
+
+                    local targetCF = tpPart.CFrame * CFrame.new(0, 2, 0)
                     local prompt = desc:FindFirstChildWhichIsA("ProximityPrompt", true)
+                    if prompt then TriggerPrompt(prompt) end
+                    SafeTeleport(hrp, targetCF)
                     if prompt then TriggerPrompt(prompt) end
                     return
                 end
@@ -2082,7 +2137,7 @@ Tabs["Main"].Icon.TextColor3 = Colors.TextPrimary
 Tabs["Main"].Label.TextColor3 = Colors.TextPrimary
 
 -- Main Page Content
-CreateLabelArea(MainPage, "⚠️ DISCONTINUED", "BExtract (0.1beta2) is no longer being developed or maintained. This is the final release. Use at your own risk — no further bug fixes or updates will be provided.", 90)
+CreateLabelArea(MainPage, "This autofarm is back, but it wont recieve much updates due to time problems.", 90)
 
 local function GetStatsText()
     local elapsed = autofarmStartTime > 0 and math.floor(tick() - autofarmStartTime) or 0
@@ -2197,7 +2252,7 @@ task.spawn(function()
                 warn("[BExtract Autofarm Error]:", err)
             end
         end
-        task.wait(SettingsState.UpdateInterval)
+        task.wait(math.max(SettingsState.UpdateInterval, 0.4))
     end
 end)
 
