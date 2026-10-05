@@ -210,7 +210,7 @@ local VersionTag = Instance.new("TextLabel")
 VersionTag.Size = UDim2.new(0, 72, 0, 20)
 VersionTag.Position = UDim2.new(0, 5, 0.5, -10)
 VersionTag.BackgroundColor3 = Colors.Accent
-VersionTag.Text = "0.1beta3"
+VersionTag.Text = "0.1beta4"
 VersionTag.TextColor3 = Color3.fromRGB(20, 15, 25)
 VersionTag.Font = FontPrimary
 VersionTag.TextSize = 11
@@ -836,6 +836,7 @@ end
 
 local SettingsState = {
     AutofarmEnabled = false,
+    SafeMode = false,
     AutofarmPreset = "Default (Recommended)",
     UpdateInterval = 0.5,
     HealLimit = 2,
@@ -1231,51 +1232,67 @@ local function GetGroundCFrame(targetCF)
     return UprightCFrame(targetCF)
 end
 
+local _walkThread = nil
+local MOVE_SPEED  = 30 -- studs per second
+
+-- Move to targetCF by stepping PivotTo each Heartbeat frame at MOVE_SPEED studs/sec.
+-- PivotTo bypasses all physics/collision entirely — goes through any wall.
+-- Slow enough to look like normal movement to the server AC.
 local function SafeTeleport(hrp, targetCF)
     if not hrp or not targetCF then return end
     targetCF = UprightCFrame(targetCF)
+    if SettingsState and SettingsState.SafeMode then
+        targetCF = targetCF * CFrame.new(0, -6, 0)
+    end
     local char = hrp.Parent
     if not char then return end
 
     local distance = (hrp.Position - targetCF.Position).Magnitude
-    if distance < 2 then return end
+    if distance < 3 then return end
 
-    pcall(function()
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if hum and hum.Sit then hum.Sit = false end
+    if _walkThread then task.cancel(_walkThread) _walkThread = nil end
 
-        -- Try to claim physics ownership of HRP so server can't roll back position
-        pcall(function()
-            if sethiddenproperty then
-                sethiddenproperty(hrp, "NetworkOwnershipRule", 0)
-            end
-        end)
+    _walkThread = task.spawn(function()
+        local startPos = hrp.Position
+        local endPos   = targetCF.Position
+        local traveled = 0
+        local total    = (startPos - endPos).Magnitude
 
-        hrp.AssemblyLinearVelocity = Vector3.zero
-        hrp.AssemblyAngularVelocity = Vector3.zero
-        char:PivotTo(targetCF)
-        hrp.CFrame = targetCF
+        while traveled < total do
+            if not hrp or not hrp.Parent then break end
+            local char2 = hrp.Parent
+            if not char2 then break end
+            local hum = char2:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health <= 0 then break end
 
-        -- Hold CFrame via PreSimulation for 20 physics frames.
-        -- This fires BEFORE the physics engine reconciles with the server,
-        -- overwriting any server-sent position correction each frame.
-        local frameCount = 0
-        local holdConn
-        holdConn = RunService.PreSimulation:Connect(function()
-            if not hrp or not hrp.Parent then
-                holdConn:Disconnect()
-                return
-            end
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
-            hrp.CFrame = targetCF
-            frameCount = frameCount + 1
-            if frameCount >= 20 then
-                holdConn:Disconnect()
-            end
-        end)
+            local dt = RunService.Heartbeat:Wait()
+            traveled = math.min(traveled + MOVE_SPEED * dt, total)
+            local alpha = traveled / total
+
+            local stepPos = startPos:Lerp(endPos, alpha)
+            local stepCF  = CFrame.new(stepPos, stepPos + targetCF.LookVector)
+            char2:PivotTo(stepCF)
+        end
+
+        _walkThread = nil
     end)
 end
+
+-- Move to target then fire prompt once arrived.
+local function TeleportAndFire(hrp, targetCF, prompt)
+    SafeTeleport(hrp, targetCF)
+    if prompt then
+        pcall(function()
+            if fireproximityprompt then
+                fireproximityprompt(prompt)
+            else
+                prompt:InputHoldBegin()
+                prompt:InputHoldEnd()
+            end
+        end)
+    end
+end
+
 
 local function CountHealItemsInInventory()
     local count = 0
@@ -1387,6 +1404,69 @@ local function FindFakeElevatorBase()
         return base
     end
     return nil
+end
+
+local function GetActiveMonsterPositions()
+    local container = GetMapContainer()
+    local monsterPositions = {}
+    if container then
+        for _, desc in ipairs(container:GetDescendants()) do
+            if desc:IsA("Model") then
+                local name = desc.Name
+                if name:find("Twisted") or name:find("Monster") or name:find("BlotHand") or name == "SproutTendril" or CollectionService:HasTag(desc, "Twisted") then
+                    local monsterHrp = desc.PrimaryPart or desc:FindFirstChild("HumanoidRootPart") or desc:FindFirstChildWhichIsA("BasePart", true)
+                    if monsterHrp then
+                        table.insert(monsterPositions, monsterHrp.Position)
+                    end
+                end
+            end
+        end
+    end
+    return monsterPositions
+end
+
+local function FindBestHidingSpot(playerPos)
+    local container = GetMapContainer()
+    local monsterPositions = GetActiveMonsterPositions()
+
+    local bestSpotCF = nil
+    local maxMinDist = -1
+
+    -- Search map for large static parts/props (pillars, walls, machines) to hide inside
+    if container then
+        for _, desc in ipairs(container:GetDescendants()) do
+            if desc:IsA("BasePart") and desc.Anchored then
+                local s = desc.Size
+                -- Part must be large enough to completely cover/embed player (>= 4x6x4 or volume >= 100)
+                if (s.X >= 4 and s.Y >= 6 and s.Z >= 4) or (s.X * s.Y * s.Z >= 100) then
+                    -- Filter out huge floor/ceiling slabs
+                    if s.X <= 50 and s.Z <= 50 and s.Y >= 4 then
+                        local pos = desc.Position
+                        local minDist = 99999
+                        for _, mPos in ipairs(monsterPositions) do
+                            local d = (pos - mPos).Magnitude
+                            if d < minDist then minDist = d end
+                        end
+
+                        if minDist > maxMinDist then
+                            maxMinDist = minDist
+                            bestSpotCF = UprightCFrame(CFrame.new(pos))
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Fallback: Use Fake Elevator or main Elevator base
+    if not bestSpotCF then
+        local safeBase = FindFakeElevatorBase() or FindElevatorBase()
+        if safeBase then
+            bestSpotCF = UprightCFrame(CFrame.new(safeBase.Position + Vector3.new(0, 3, 0)))
+        end
+    end
+
+    return bestSpotCF
 end
 
 local function IsThreatNearby(hrpPosition, detectionRadius, ignoreModel)
@@ -1994,19 +2074,25 @@ local function ExecuteAutofarmStep()
         end
     end
 
-    -- Threat Evacuation: Only evacuate if player is actively seen AND monsters are within 15 studs
+    -- Threat response: when seen or monster is dangerously close, hide inside a large map object far from twisteds.
     local isSeen = IsPlayerSeen()
     local isDangerouslyClose = IsThreatNearby(hrp.Position, 15)
 
-    if isSeen and isDangerouslyClose then
+    if isSeen or isDangerouslyClose then
         lastThreatTime = tick()
-        if safeBase then
-            local safeTargetCF = safeBase.CFrame * CFrame.new(0, 3, 0)
-            if (hrp.Position - safeTargetCF.Position).Magnitude > 3 then
-                SafeTeleport(hrp, safeTargetCF)
-            end
-            return
+
+        local hideCF = FindBestHidingSpot(hrp.Position)
+        if hideCF then
+            -- Evacuate inside the hiding object using SafeTeleport (PivotTo through walls/geometry)
+            SafeTeleport(hrp, hideCF)
+
+            -- Stay hidden inside until threat clears
+            repeat
+                task.wait(0.2)
+            until (not hrp or not hrp.Parent)
+                or (not IsPlayerSeen() and not IsThreatNearby(hrp.Position, 25))
         end
+        return
     end
 
     -- 3. Items, Tapes & Research Capsules Pickup
@@ -2057,15 +2143,9 @@ local function ExecuteAutofarmStep()
                 continue
             end
 
-            -- Already close enough — just trigger, don't teleport again
-            if (hrp.Position - handle.Position).Magnitude <= 6 then
-                TriggerPrompt(prompt)
-                return
-            end
-
+            -- Velocity-fling to item then fire prompt
             local targetCF = handle.CFrame * CFrame.new(0, 2, 0)
-            SafeTeleport(hrp, targetCF)
-            TriggerPrompt(prompt)
+            TeleportAndFire(hrp, targetCF, prompt)
             return
         end
     end
@@ -2113,9 +2193,7 @@ local function ExecuteAutofarmStep()
 
                     local targetCF = tpPart.CFrame * CFrame.new(0, 2, 0)
                     local prompt = desc:FindFirstChildWhichIsA("ProximityPrompt", true)
-                    if prompt then TriggerPrompt(prompt) end
-                    SafeTeleport(hrp, targetCF)
-                    if prompt then TriggerPrompt(prompt) end
+                    TeleportAndFire(hrp, targetCF, prompt)
                     return
                 end
             end
@@ -2135,9 +2213,6 @@ Tabs["Main"].Page.Visible = true
 Tabs["Main"].Btn.BackgroundTransparency = 0
 Tabs["Main"].Icon.TextColor3 = Colors.TextPrimary
 Tabs["Main"].Label.TextColor3 = Colors.TextPrimary
-
--- Main Page Content
-CreateLabelArea(MainPage, "This autofarm is back, but it wont recieve much updates due to time problems.", 90)
 
 local function GetStatsText()
     local elapsed = autofarmStartTime > 0 and math.floor(tick() - autofarmStartTime) or 0
@@ -2181,6 +2256,18 @@ CreateToggle(MainPage, "Autofarm", "Enables the autofarm!", function(state)
     else
         autofarmStartTime = 0
         SessionCard.SetText("Waiting for Autofarm to start...")
+    end
+end)
+
+CreateToggle(MainPage, "Safe Mode", "Pivots your character 6 studs down to stay safe right below floor level.", function(state)
+    SettingsState.SafeMode = state
+    local char, hrp, hum = GetCharacterComponents()
+    if hrp and char then
+        if state then
+            char:PivotTo(hrp.CFrame * CFrame.new(0, -6, 0))
+        else
+            char:PivotTo(hrp.CFrame * CFrame.new(0, 6, 0))
+        end
     end
 end)
 
@@ -2252,7 +2339,7 @@ task.spawn(function()
                 warn("[BExtract Autofarm Error]:", err)
             end
         end
-        task.wait(math.max(SettingsState.UpdateInterval, 0.4))
+        task.wait(math.max(SettingsState.UpdateInterval, 0.1))
     end
 end)
 
